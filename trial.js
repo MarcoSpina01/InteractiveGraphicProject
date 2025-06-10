@@ -2,58 +2,41 @@ import * as THREE from 'three';
 import { OrbitControls }    from 'three/examples/jsm/controls/OrbitControls.js';
 import { GUI }              from 'lil-gui';
 import { createFish }       from './fish.js';
-import { RGBELoader }       from 'three/examples/jsm/loaders/RGBELoader.js';
-import { PMREMGenerator }   from 'three';
-import { EffectComposer }   from 'three/examples/jsm/postprocessing/EffectComposer.js';      
-import { RenderPass }       from 'three/examples/jsm/postprocessing/RenderPass.js';          
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { PMREMGenerator } from 'three';   
 
 // Scene, camera, renderer
 const scene    = new THREE.Scene();
-const camera   = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 1000);
+const camera   = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight , 0.1, 1000);
 camera.position.set(0, 2, -15);
 camera.lookAt(0, 2, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
+renderer.setSize(window.innerWidth, window.innerHeight );
 renderer.setClearColor(0x66775f);
+
+const pmremGenerator = new PMREMGenerator(renderer);
+pmremGenerator.compileEquirectangularShader();
+
+new RGBELoader()
+  .setDataType(THREE.FloatType) // important for HDR
+  .load('hdr/pine_picnic_4k.hdr', function(hdrEquirect) {
+    const envMap = pmremGenerator.fromEquirectangular(hdrEquirect).texture;
+    scene.environment = envMap;     // for PBR reflections
+    scene.background = envMap;      // as background image
+    fishData.forEach(({ material }) => {
+    material.userData.uniforms.envMap.value = envMap;
+    });
+
+    hdrEquirect.dispose();
+    pmremGenerator.dispose();
+  });
 
 // ⬅– ENABLE SHADOW MAPS
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 document.body.appendChild(renderer.domElement);
-
-// HDR ENVIRONMENT (PMREM + RGBELoader)
-const pmremGen = new PMREMGenerator(renderer);
-pmremGen.compileEquirectangularShader();
-
-
-new RGBELoader()
-  .setDataType(THREE.HalfFloatType)  // <-- UnsignedByteType is more broadly supported than HalfFloatType!
-  .load(
-    'empty_play_room_4k.hdr',
-    (hdrEquirect) => {
-      const envMap = pmremGen.fromEquirectangular(hdrEquirect).texture;
-      scene.environment = envMap;
-      scene.background = envMap;
-      waterUniforms.envMap.value = envMap;
-      // Apply envMap to every fish as soon as HDR is ready
-      fishData.forEach(({ material }) => {
-        if (material.userData && material.userData.uniforms) {
-          material.userData.uniforms.envMap = { value: envMap };
-        }
-      });
-      hdrEquirect.dispose();
-      pmremGen.dispose();
-    },
-    undefined,
-    (err) => { console.error('Error loading HDR:', err); }
-  );
-
-// Post-processing (Bloom) – OPTIONAL
-const composer = new EffectComposer(renderer);
-const renderPass = new RenderPass(scene, camera);
-composer.addPass(renderPass);
 
 
 // Controls
@@ -67,20 +50,30 @@ controls.target.set(0, 2, 0);
 controls.update();
 
 // Lights
-const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-dirLight.position.set(1, 5, 2);
-dirLight.castShadow = true;               // ⬅– ADD: light casts shadows
+scene.children.filter(obj => obj.isLight).forEach(light => scene.remove(light));
+
+// Main "sunlight"
+const dirLight = new THREE.DirectionalLight(0xbfdfff, 1.25);
+dirLight.position.set(0, 20, 0); 
+dirLight.castShadow = true;
 dirLight.shadow.camera.near = 0.5;
 dirLight.shadow.camera.far = 50;
-dirLight.shadow.camera.left = -10;
-dirLight.shadow.camera.right = 10;
-dirLight.shadow.camera.top = 10;
-dirLight.shadow.camera.bottom = -10;
+dirLight.shadow.camera.left = -14;
+dirLight.shadow.camera.right = 14;
+dirLight.shadow.camera.top = 14;
+dirLight.shadow.camera.bottom = -14;
 dirLight.shadow.mapSize.width = 1024;
 dirLight.shadow.mapSize.height = 1024;
 
-const ambLight = new THREE.AmbientLight(0xffffff, 0.3);
-scene.add(dirLight, ambLight);
+// Underwater blue ambient
+const ambLight = new THREE.AmbientLight(0x4887b4, 0.35);
+
+// Subsurface blue point light
+const blueLight = new THREE.PointLight(0x1c73bb, 1.1, 22);
+blueLight.position.set(0, 2, 0);
+
+// Add all lights to scene
+scene.add(dirLight, ambLight, blueLight);
 
 // Aquarium
 const aqWidth  = 20;
@@ -101,104 +94,19 @@ const aquarium = new THREE.Mesh(aquariumGeo, aquariumMat);
 aquarium.receiveShadow = true;            // ⬅– ADD: aquarium walls/floor receive shadows
 scene.add(aquarium);
 
-// Optionally add a dedicated “floor” inside the tank for clearer shadows:
-const floorMat = new THREE.ShadowMaterial({ opacity: 0.3 });
-const floorPlane = new THREE.Mesh(
-  new THREE.PlaneGeometry(aqWidth - 0.1, aqDepth - 0.1),
-  floorMat
-);
-floorPlane.rotation.x = -Math.PI / 2;
-floorPlane.position.y = -aqHeight / 2 + 0.01;
-floorPlane.receiveShadow = true;
-scene.add(floorPlane);
-
-const waterUniforms = {
-  time:     { value: 0 },
-  envMap:   { value: null }, // will be set after HDR load
-  cameraPos: { value: new THREE.Vector3() }
-};
-
-const waterVertex = `
-uniform float time;
-varying vec3 vWorldPos;
-varying vec3 vNormal;
-void main() {
-  vec3 pos = position;
-  float freq = 2.0;
-  float amp = 0.15;
-  float phase = time * 0.7;
-  pos.y += sin(pos.x * freq + phase) * amp;
-  pos.y += sin(pos.z * freq * 1.3 - phase * 1.5) * amp * 0.6;
-  vWorldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
-  // Approximate normal by cross product of local tangents
-  vec3 dx = dFdx(pos);
-  vec3 dz = dFdz(pos);
-  vNormal = normalize(cross(dx, dz));
-  gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
-}
-`;
-
-const waterFragment = `
-precision highp float;
-uniform samplerCube envMap;
-uniform vec3 cameraPos;
-varying vec3 vWorldPos;
-varying vec3 vNormal;
-
-void main() {
-  vec3 viewDir = normalize(vWorldPos - cameraPos);
-  float fresnel = pow(1.0 - max(dot(viewDir, normalize(vNormal)), 0.0), 3.0);
-  vec3 reflectColor = textureCube(envMap, reflect(viewDir, normalize(vNormal))).rgb;
-  vec3 refractColor = vec3(0.1,0.2,0.4);
-  vec3 col = mix(refractColor, reflectColor, fresnel);
-  gl_FragColor = vec4(col, 0.6);
-}
-`;
-
-const waterShaderMat = new THREE.ShaderMaterial({
-  uniforms: waterUniforms,
-  vertexShader: waterVertex,
-  fragmentShader: waterFragment,
-  transparent: true
-});
-const water = new THREE.Mesh(
-  new THREE.PlaneGeometry(aqWidth, aqDepth, 128, 128),
-  waterShaderMat
-);
-water.rotation.x = -Math.PI / 2;
-water.position.y = aqHeight/2 - 0.01;
-scene.add(water);
-
-// 1) Create a slightly smaller box to represent the water volume
-const waterVolumeGeo = new THREE.BoxGeometry(
-  aqWidth  - 0.1,
-  aqHeight - 0.1,
-  aqDepth  - 0.1
-);
-
-// 2) Give it a “water” material
-const waterVolumeMat = new THREE.MeshPhysicalMaterial({
-  color:        0x336688,
-  metalness:    0,
-  roughness:    0,
-  transmission: 0.8,
-  thickness:    2,
-  transparent:  true,
-  opacity:      0.6,
-  side:         THREE.FrontSide
-});
-const waterVolume = new THREE.Mesh(waterVolumeGeo, waterVolumeMat);
-scene.add(waterVolume);
+const textureLoader = new THREE.TextureLoader();
 
 // Underwater “fog” for depth attenuation
-scene.fog = new THREE.FogExp2(0x336688, 0.02);
-renderer.setClearColor(scene.fog.color);
+//scene.fog = new THREE.FogExp2(0x336688, 0.02);
+//renderer.setClearColor(scene.fog.color);
 
 // Motion bounds
 const margin = 2;
 const halfX  = aqWidth/2  - margin;
 const halfY  = aqHeight/2 - margin;
 const halfZ  = aqDepth/2  - margin;
+
+
 
 // Fish management
 let targets  = [];
@@ -211,8 +119,12 @@ const params = {
   fishSpeed: 2,
   turnSpeed: 1.5,
   separationDist: 1.0,
-  separationStrength: 2.0
+  separationStrength: 2.0,
+  alignmentStrength: 1.0, 
+  cohesionStrength: 1.0,  
+  flockRadius: 3.0        
 };
+
 
 // GUI setup
 const gui = new GUI();
@@ -224,6 +136,9 @@ gui.add(params, 'fishSpeed', 0.1, 10, 0.1).name('Fish Speed');
 gui.add(params, 'turnSpeed', 0.1, 5, 0.1).name('Turn Responsiveness');
 gui.add(params, 'separationDist', 0.1, 5, 0.1).name('Separation Distance');
 gui.add(params, 'separationStrength', 0.1, 5, 0.1).name('Separation Strength');
+gui.add(params, 'alignmentStrength', 0.0, 5.0, 0.1).name('Alignment');
+gui.add(params, 'cohesionStrength', 0.0, 5.0, 0.1).name('Cohesion');
+gui.add(params, 'flockRadius', 0.5, 10, 0.1).name('Flock Radius');
 
 // Helpers
 const forward = new THREE.Vector3(-1,0,0);
@@ -234,7 +149,6 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);  // ⬅– ADD
 });
 
 updateFishCount(params.fishCount);
@@ -257,7 +171,7 @@ function updateFishCount(count) {
   // Add new fish
   while (fishData.length < count) {
     const { mesh: fish, material: fishMat } = createFish(scene);
-    fish.scale.set(0.2, 0.2, 0.2);
+    fish.scale.set(0.1, 0.1, 0.1);
     fish.geometry.computeBoundingSphere();
     const radius = fish.geometry.boundingSphere.radius * fish.scale.x;
 
@@ -269,13 +183,14 @@ function updateFishCount(count) {
     fishMat.color.set(params.fishColor);
     scene.add(fish);
 
-    fishData.push({ mesh: fish, material: fishMat, velocity, acceleration, mass, radius });
+    const phase = Math.random() * Math.PI * 2;
+    fishData.push({ mesh: fish, material: fishMat, velocity, acceleration, mass, radius, phase});
     pickNewTarget(fishData.length - 1);
   }
 }
 
 // Bubble particles
-const bubbleCount = 50;
+const bubbleCount = 10;
 const bubbleGeo = new THREE.SphereGeometry(0.07, 8, 8);
 const bubbleMat = new THREE.MeshPhysicalMaterial({
   color: 0xffffff,
@@ -299,7 +214,7 @@ function resetBubble(bubble) {
     -aqHeight / 2 + 0.2,
     THREE.MathUtils.randFloatSpread(aqDepth * 0.4)
   );
-  bubble.userData.speed = THREE.MathUtils.randFloat(0.25, 0.6);
+  bubble.userData.speed = THREE.MathUtils.randFloat(0.15, 0.5);
 }
 
 const sandWidth  = aqWidth - 0.3;
@@ -309,28 +224,10 @@ const sandHeight = 0.8; // How thick you want your sand volume
 // A box with many top vertices
 const sandGeom = new THREE.BoxGeometry(sandWidth, sandHeight, sandDepth, 40, 6, 40);
 
-// Deform only the top face vertices (where y is max)
-const position = sandGeom.attributes.position;
-const halffY = sandHeight / 2;
-for (let i = 0; i < position.count; i++) {
-  let y = position.getY(i);
-  if (Math.abs(y - halffY) < 1e-3) { // Top surface
-    let x = position.getX(i);
-    let z = position.getZ(i);
-    // Apply a mound with gentle variation
-    let mound = Math.exp(-(x * x + z * z) / 45) * 0.3; // center mound
-    let random = (Math.random() - 0.5) * 0.10; // random bumps
-    position.setY(i, y + mound + random);
-  }
-}
-sandGeom.computeVertexNormals();
-
-
 // Set up 2nd UV channel for aoMap (for PBR materials)
 sandGeom.setAttribute('uv2', new THREE.BufferAttribute(sandGeom.attributes.uv.array, 2));
 
 
-const textureLoader = new THREE.TextureLoader();
 const sandAlbedo    = textureLoader.load('gravelly_sand_4k.gltf/textures/gravelly_sand_diff_4k.jpg');
 const sandNormal    = textureLoader.load('gravelly_sand_4k.gltf/textures/gravelly_sand_nor_gl_4k.jpg');
 const sandARM       = textureLoader.load('gravelly_sand_4k.gltf/textures/gravelly_sand_arm_4k.jpg');
@@ -388,6 +285,24 @@ function getSandHeightAt(x, z, sandGeom, sandWidth, sandDepth, sandHeight) {
   return closestY;
 }
 
+const causticsTexture = textureLoader.load('caustics/caustics/caust00.png');
+causticsTexture.wrapS = causticsTexture.wrapT = THREE.RepeatWrapping;
+causticsTexture.repeat.set(4, 2); // tweak for your aquarium
+
+const causticsMat = new THREE.MeshBasicMaterial({
+  map: causticsTexture,
+  transparent: true,
+  opacity: 0.3, // subtle!
+  depthWrite: false
+});
+const causticsMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(aqWidth - 0.1, aqDepth - 0.1),
+  causticsMat
+);
+causticsMesh.rotation.x = -Math.PI / 2;
+causticsMesh.position.y = sand.position.y + sandHeight / 2 + 0.03; // just above sand
+scene.add(causticsMesh);
+
 
 function addRocks(scene) {
   const rockGeo = new THREE.IcosahedronGeometry(0.5, 1);
@@ -413,32 +328,117 @@ function addRocks(scene) {
 }
 addRocks(scene);
 
-function addPlants(scene) {
-  const plantMat = new THREE.MeshStandardMaterial({ color: 0x449944, roughness: 0.7, metalness: 0 });
-  for (let i = 0; i < 14; i++) {
-    const height = THREE.MathUtils.randFloat(1.2, 3);
-    const px = THREE.MathUtils.randFloatSpread(sandWidth * 0.85);
-    const pz = THREE.MathUtils.randFloatSpread(sandDepth * 0.85);
-    // Get the surface Y at (px, pz)
-    const py = getSandHeightAt(px, pz, sandGeom, sandWidth, sandDepth, sandHeight);
+const seaPlants = [];
+const SEGMENTS = 12; 
+const PLANT_COUNT = 10; 
+const PLANT_LEN = 2.5; 
 
-    const geo = new THREE.CylinderGeometry(0.05, 0.15, height, 6, 1);
-    const plant = new THREE.Mesh(geo, plantMat.clone());
-    plant.position.set(
-      px,
-      sand.position.y + py + height/2,
-      pz
-    );
-    plant.castShadow = true;
-    scene.add(plant);
+function createKelpRibbon(points, bladeWidth = 0.13) {
+  const segs = points.length - 1;
+  const pos = [];
+  const norm = [];
+  const idx = [];
+  const uvs = [];
+
+  for (let i = 0; i < segs; i++) {
+    // For each segment, make two vertices: left and right of the segment line
+    const pA = points[i];
+    const pB = points[i + 1];
+    // Direction of this segment
+    const dir = pB.clone().sub(pA).normalize();
+    // Find a "side" vector: world up crossed with segment direction
+    const up = new THREE.Vector3(0, 1, 0);
+    let side = new THREE.Vector3().crossVectors(up, dir).normalize();
+    // If segment is vertical, fudge it
+    if (side.length() < 0.0001) side.set(1, 0, 0);
+
+    // Taper width toward tip (linear or exponential)
+    const t = i / segs;
+    const width = bladeWidth * (1 - t * 0.75);
+
+    // Two vertices: left and right
+    const left = pA.clone().add(side.clone().multiplyScalar(width * 0.5));
+    const right = pA.clone().add(side.clone().multiplyScalar(-width * 0.5));
+
+    pos.push(left.x, left.y, left.z);
+    pos.push(right.x, right.y, right.z);
+
+    // Flat normal: average segment direction crossed with side, or just up
+    norm.push(0, 1, 0, 0, 1, 0);
+
+    // UVs
+    uvs.push(0, t, 1, t);
+  }
+
+  // Indices: make a triangle strip
+  for (let i = 0; i < segs - 1; i++) {
+    const a = i * 2;
+    const b = a + 1;
+    const c = a + 2;
+    const d = a + 3;
+    // Two triangles per segment
+    idx.push(a, b, c);
+    idx.push(b, d, c);
+  }
+
+  // Build BufferGeometry
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals(); // ensure lighting works
+
+  return geo;
+}
+
+// Remove your old addPlants()!
+function addSeaPlants(scene) {
+  for (let i = 0; i < PLANT_COUNT; i++) {
+    const baseX = THREE.MathUtils.randFloatSpread(sandWidth * 0.85);
+    const baseZ = THREE.MathUtils.randFloatSpread(sandDepth * 0.85);
+    const baseY = getSandHeightAt(baseX, baseZ, sandGeom, sandWidth, sandDepth, sandHeight) + sand.position.y;
+    const base = new THREE.Vector3(baseX, baseY, baseZ);
+
+    // Chain of points from base upward
+    const points = [];
+    const velocities = [];
+    for (let j = 0; j < SEGMENTS; j++) {
+      points.push(new THREE.Vector3(
+        base.x,
+        base.y + (j / (SEGMENTS - 1)) * PLANT_LEN,
+        base.z
+      ));
+      velocities.push(new THREE.Vector3(0, 0, 0));
+    }
+
+    const geo = createKelpRibbon(points, 0.18);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x388e3c,
+      roughness: 0.7,
+      metalness: 0.03,
+      side: THREE.DoubleSide,     // flat ribbon
+      transparent: true,
+      opacity: 0.93
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    scene.add(mesh);
+
+    seaPlants.push({ base, points, velocities, mesh });
   }
 }
-addPlants(scene);
+addSeaPlants(scene);
+
+
 
 
 // Animation loop
 renderer.setAnimationLoop(() => {
   const delta = clock.getDelta();
+
+  causticsTexture.offset.x += 0.04 * delta; // horizontal movement
+  causticsTexture.offset.y += 0.03 * delta; // vertical movement
 
   // 1) Compute spring-based separation/repulsion forces (physics)
   fishData.forEach((fishA, i) => {
@@ -460,6 +460,31 @@ renderer.setAnimationLoop(() => {
         fishA.acceleration.add(force.divideScalar(fishA.mass));
       }
     });
+    let neighbors = [];
+    for (let j = 0; j < fishData.length; j++) {
+      if (i === j) continue;
+      if (fishA.mesh.position.distanceTo(fishData[j].mesh.position) < params.flockRadius) {
+        neighbors.push(fishData[j]);
+      }
+    }
+    if (neighbors.length > 0) {
+      // ALIGNMENT
+      let avgVel = new THREE.Vector3();
+      neighbors.forEach(n => avgVel.add(n.velocity));
+      avgVel.divideScalar(neighbors.length).normalize();
+      let alignment = avgVel.sub(fishA.velocity.clone().normalize())
+                            .multiplyScalar(params.alignmentStrength);
+      fishA.acceleration.add(alignment);
+
+      // COHESION
+      let avgPos = new THREE.Vector3();
+      neighbors.forEach(n => avgPos.add(n.mesh.position));
+      avgPos.divideScalar(neighbors.length);
+      let cohesion = avgPos.sub(fishA.mesh.position)
+                           .normalize()
+                           .multiplyScalar(params.cohesionStrength);
+      fishA.acceleration.add(cohesion);
+    }
   });
 
   // 2) Move fish, apply steering, orientation, wall bounce, and target
@@ -512,25 +537,82 @@ renderer.setAnimationLoop(() => {
     const quat = new THREE.Quaternion().setFromUnitVectors(forward, dirNorm);
     fish.mesh.quaternion.slerp(quat, 0.1);
 
-    fish.material.userData.uniforms.time.value += delta * 1.5;
+    fish.material.userData.uniforms.time.value = performance.now() * 0.001 * 1.5 + fish.phase;
 
     // If close to target, pick new target
     if (pos.distanceToSquared(targets[i]) < 0.25) pickNewTarget(i);
   });
 
-  // Animate bubbles
-  bubbles.forEach(bubble => {
-    bubble.position.y += bubble.userData.speed * delta;
-    if (bubble.position.y > aqHeight / 2 - 0.5) resetBubble(bubble);
+const kelpSpring = 60;   // Higher: stiffer
+const kelpDamping = 7.2; // Higher: less "wiggle"
+const jointLength = PLANT_LEN / (SEGMENTS - 1);
+
+seaPlants.forEach(plant => {
+  // 1. Fixed base
+  plant.points[0].copy(plant.base);
+  plant.velocities[0].set(0, 0, 0);
+
+  // 2. Fish interaction: if any segment is close, push it sideways
+  fishData.forEach(fish => {
+    for (let j = 1; j < SEGMENTS; j++) {
+      const dist = plant.points[j].distanceTo(fish.mesh.position);
+      if (dist < 0.55) {
+        // Push away from fish, slightly up too (kelp is buoyant)
+        const push = plant.points[j].clone().sub(fish.mesh.position).setY(0).normalize().multiplyScalar(0.09);
+        push.y = 0.04; // encourage tip to wave up
+        plant.velocities[j].add(push);
+      }
+    }
   });
 
-  // 3) Animate water shader
-  waterUniforms.time.value = performance.now() * 0.001;
-  waterUniforms.cameraPos.value.copy(camera.position);
+  // 3. Spring and water current idle movement
+  for (let j = 1; j < SEGMENTS; j++) {
+    // Idle "wave" based on time and segment
+    const t = j / (SEGMENTS - 1);
+    const sway = Math.sin(performance.now() * 0.0007 + plant.base.x * 0.2 + t * 2.2) * 0.0002 * (0.5 + t);
+
+    // Target: straight above prev, plus gentle wave offset
+    const prev = plant.points[j - 1];
+    const curr = plant.points[j];
+    const target = prev.clone().add(new THREE.Vector3(sway, jointLength, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), sway * 2));
+    // Spring toward target
+    const diff = target.clone().sub(curr);
+    plant.velocities[j].add(diff.multiplyScalar(kelpSpring * clock.getDelta()));
+    // Damping
+    plant.velocities[j].multiplyScalar(Math.exp(-kelpDamping * clock.getDelta()));
+    // Integrate
+    curr.add(plant.velocities[j]);
+  }
+
+  // 4. Length constraint pass: enforce segment length (to prevent "exploding" ropes)
+  for (let j = 1; j < SEGMENTS; j++) {
+    const prev = plant.points[j - 1];
+    const curr = plant.points[j];
+    const dir = curr.clone().sub(prev).normalize();
+    curr.copy(prev.clone().add(dir.multiplyScalar(jointLength)));
+  }
+
+  // 5. Update geometry (with kelp radius function)
+  const curve = new THREE.CatmullRomCurve3(plant.points);
+  plant.mesh.geometry.dispose();
+  plant.mesh.geometry = createKelpRibbon(plant.points, 0.18);
+  });
+
+  
+
+
+  // Animate bubbles
+  bubbles.forEach(bubble => {
+  bubble.position.y += bubble.userData.speed * delta;
+  bubble.position.x += Math.sin(performance.now() * 0.001 + bubble.position.z) * 0.01;
+  bubble.position.z += Math.cos(performance.now() * 0.0015 + bubble.position.x) * 0.01;
+  if (bubble.position.y > aqHeight / 2 - 0.5) resetBubble(bubble);
+  });
 
   // 4) Update controls, render scene
+  renderer.render(scene, camera);
+
   controls.update();
-  composer.render();
 });
 
 

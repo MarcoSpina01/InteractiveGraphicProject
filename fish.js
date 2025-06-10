@@ -3,11 +3,11 @@ import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUti
 
 
 const simpleNoise = `
-    float N (vec2 st) { // https://thebookofshaders.com/10/
+    float N (vec2 st) { 
         return fract( sin( dot( st.xy, vec2(12.9898,78.233 ) ) ) *  43758.5453123);
     }
     
-    float smoothNoise( vec2 ip ){ // https://www.youtube.com/watch?v=zXsWftRdsvU
+    float smoothNoise( vec2 ip ){ 
     	vec2 lv = fract( ip );
       vec2 id = floor( ip );
       
@@ -24,32 +24,16 @@ const simpleNoise = `
       return mix( b, t, lv.y );
     }
   `;
-  
-const caustic = `
-        vec2 cPos = vPos.xz - (1, 0.25) * vPos.y;
-        vec2 cUv = (cPos - vec2(time * 1.5, 0.));
-
-        float caustic = abs(smoothNoise(cUv) - 0.5);
-        caustic = pow(smoothstep(0.5, 0., caustic), 2.);
-        float causticFade = smoothNoise(cPos - vec2(time, 0.));
-        caustic *= causticFade;
-
-        float causticShade = clamp(dot(normalize(vec3(1, 1, 0.25)), vN), 0., 1.);
-        caustic *= causticShade;
-
-        gl_FragColor.rgb += vec3(caustic) * 0.25;
-  `;
 
 function createFishMaterial(){
-  let mapTex = new THREE.TextureLoader().load('https://threejs.org/examples/textures/uv_grid_opengl.jpg');
   let m = new THREE.MeshPhongMaterial({
     color: 0x446655,
     wireframe: false,
-    //map: mapTex,
+    // map: mapTex,
     onBeforeCompile: shader => {
       shader.uniforms.time = m.userData.uniforms.time;
       shader.uniforms.totalLength = m.userData.uniforms.totalLength;
-      shader.uniforms.envMap = m.userData.uniforms.envMap; // <-- Add envMap as uniform!
+      shader.uniforms.envMap = m.userData.uniforms.envMap; 
 
       shader.vertexShader = `
         uniform float time;
@@ -68,7 +52,6 @@ function createFishMaterial(){
           float dz = getWave(x + d) - getWave(x);
           return atan( dz, d );
         }
-        // https://gist.github.com/yiwenl/3f804e80d0930e34a0b33359259b556c //
         mat4 rotationMatrix(vec3 axis, float angle) {
             axis = normalize(axis);
             float s = sin(angle);
@@ -356,7 +339,7 @@ function createFishGeometry(){
       if (idx < arr.length - 1) p.setZ(-shift * shiftSign)
     });
 
-    console.log(contourPoints.length, contourPointsRev.length, basePts.length, basePtsRev.length);
+    // console.log(contourPoints.length, contourPointsRev.length, basePts.length, basePtsRev.length);
 
     let fullPoints = [];
     fullPoints = fullPoints.concat(contourPoints, contourPointsRev, basePts, basePtsRev);
@@ -418,10 +401,6 @@ function createFishGeometry(){
         return v.lerpVectors(i1, i2, a);
       }
     }
-  }
-
-  function addPartIndex(geometry, partIndex){
-    let counter = geometry.attributes.position.count;
   }
 }
 
