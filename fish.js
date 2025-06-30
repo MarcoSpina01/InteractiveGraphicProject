@@ -2,172 +2,19 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 
-const simpleNoise = `
-    float N (vec2 st) { 
-        return fract( sin( dot( st.xy, vec2(12.9898,78.233 ) ) ) *  43758.5453123);
-    }
-    
-    float smoothNoise( vec2 ip ){ 
-    	vec2 lv = fract( ip );
-      vec2 id = floor( ip );
-      
-      lv = lv * lv * ( 3. - 2. * lv );
-      
-      float bl = N( id );
-      float br = N( id + vec2( 1, 0 ));
-      float b = mix( bl, br, lv.x );
-      
-      float tl = N( id + vec2( 0, 1 ));
-      float tr = N( id + vec2( 1, 1 ));
-      float t = mix( tl, tr, lv.x );
-      
-      return mix( b, t, lv.y );
-    }
-  `;
-
-function createFishMaterial(){
-  let m = new THREE.MeshPhongMaterial({
-    color: 0x446655,
-    wireframe: false,
-    // map: mapTex,
-    onBeforeCompile: shader => {
-      shader.uniforms.time = m.userData.uniforms.time;
-      shader.uniforms.totalLength = m.userData.uniforms.totalLength;
-      shader.uniforms.envMap = m.userData.uniforms.envMap; 
-
-      shader.vertexShader = `
-        uniform float time;
-        uniform float totalLength;
-        attribute float parts;
-        varying float vParts;
-        varying vec4 vPos;
-        varying vec3 vN;
-        
-        float getWave(float x){
-          float currX = mod(x - (time * 4.), 3.1415926535 * 2.);
-          return sin(currX) * 0.375 * pow((x / totalLength), 2.);
-        }
-        float getAngle(float x){
-          float d = 0.001;
-          float dz = getWave(x + d) - getWave(x);
-          return atan( dz, d );
-        }
-        mat4 rotationMatrix(vec3 axis, float angle) {
-            axis = normalize(axis);
-            float s = sin(angle);
-            float c = cos(angle);
-            float oc = 1.0 - c;
-
-            return mat4(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
-                        oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
-                        oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
-                        0.0,                                0.0,                                0.0,                                1.0);
-        }
-
-        vec3 rotate(vec3 v, vec3 axis, float angle) {
-          mat4 m = rotationMatrix(axis, angle);
-          return (m * vec4(v, 1.0)).xyz;
-        }
-        /////////////////////////////////////////////////////////////////////
-        ${shader.vertexShader}
-      `.replace(
-        `#include <beginnormal_vertex>`,
-        `#include <beginnormal_vertex>
-          float ang = getAngle(position.x);
-          objectNormal = normalize(rotate(vec3(normal), vec3(0, 1, 0), ang));
-          vN = objectNormal;
-        `
-      )
-       .replace(
-        `#include <begin_vertex>`,
-        `#include <begin_vertex>
-          vParts = parts;
-          transformed.z += getWave(position.x);
-          vPos = modelMatrix * vec4(transformed, 1.0);
-        `
-      );
-
-      shader.fragmentShader = `
-        uniform float time;
-        uniform samplerCube envMap;
-        varying float vParts;
-        varying vec4 vPos;
-        varying vec3 vN;
-        ${simpleNoise}
-        ${shader.fragmentShader}
-      `.replace(
-        `vec4 diffuseColor = vec4( diffuse, opacity );`,
-        `
-          vec3 col = diffuse;
-          float parts = floor(vParts + 0.01);
-          if (parts == 0.){
-            col = diffuse;
-            float wave = sin(vUv.y * PI2 * 6.) * 0.5 + 0.5;
-            col *= wave * 0.15 + 0.2;
-            col = mix(diffuse, col, smoothstep(0.9, 0.5, abs(vUv.x - 0.5) * 2.));
-            col = mix(col, diffuse * 0.25, smoothstep(0.2, 0.0, vUv.y));
-            float head = abs(sin(vUv.x * PI2));
-            head = head * 0.05 + 0.175;
-            col = mix(diffuse * 0.25, col, smoothstep(1. - head, 1. - (head + 0.025), vUv.y));
-            vec2 eyeUv = vUv;
-            eyeUv.x = abs(vUv.x - 0.5) * 0.35;
-            float eyeDist = distance(vec2(0.07, 0.875), eyeUv);
-            float eye = smoothstep(0.02, 0.0175, eyeDist);
-            col = mix(col, vec3(1, 1, 0) * 0.2, eye);
-            eye = smoothstep(0.015, 0.0125, eyeDist);
-            col = mix(col, vec3(0.05), eye);
-            vec2 mouthUv = vUv;
-            mouthUv.x = abs(vUv.x - 0.5) * 2.;
-            mouthUv.x -= mouthUv.y * 0.25;
-            float mouth = 1. - (cos(mouthUv.x * PI2) * 0.5 + 0.5);
-            mouth = pow(mouth, 64.) * 0.05 + 0.001;
-            mouth = 1. - mouth;
-            col = mix(diffuse * 0.4, col, smoothstep(mouth, mouth - 0.001, mouthUv.y));
-          }
-          if (parts == 1.){
-            col = (vec3(0.375, 0.1, 0.05) * 3.) * diffuse;
-            float wave = sin(vUv.x * PI2 * 70.) * 0.5 + 0.5;
-            wave *= sin(vUv.y * PI2 * 5.) * 0.5 + 0.5;
-            col *= wave * 0.25 + 0.75;
-            vec2 tailUv = vUv;
-            tailUv.y -= 0.5;
-            tailUv.y = abs(tailUv.y) * 2.;
-            col = mix(diffuse * 0.25, col, smoothstep(1., 0.5, tailUv.y));
-          }
-          // Rim lighting
-          vec3 norm = normalize(vN);
-          vec3 viewDir = normalize(vPos.xyz - cameraPosition);
-          float rim = pow(1.0 - dot(viewDir, norm), 2.0);
-          // Reflection
-          vec3 R = reflect(viewDir, norm);
-          vec3 envColor = textureCube(envMap, R).rgb;
-          col = mix(col, envColor, 0.13);
-          col += rim * vec3(0.23, 0.17, 0.10);
-          vec4 diffuseColor = vec4( col, opacity );
-        `
-      ).replace(
-        `#include <dithering_fragment>`,
-        `#include <dithering_fragment>
-        // fake caustic
-        vec2 cPos = vPos.xz - (1, 0.25) * vPos.y;
-        vec2 cUv = (cPos - vec2(time * 1.5, 0.));
-        float caustic = abs(smoothNoise(cUv) - 0.5);
-        caustic = pow(smoothstep(0.5, 0., caustic), 2.);
-        float causticFade = smoothNoise(cPos - vec2(time, 0.));
-        caustic *= causticFade;
-        float causticShade = clamp(dot(normalize(vec3(1, 1, 0.25)), vN), 0., 1.);
-        caustic *= causticShade;
-        gl_FragColor.rgb += vec3(caustic) * 0.25;
-        `
-      );
-    }
+function createFishMaterial(envMap){
+  let m = new THREE.MeshPhysicalMaterial({
+    color: 0xff8800,
+    metalness: 0.1,
+    roughness: 0.6,
+    envMap: envMap,
+    envMapIntensity: 0.5,
+    flatShading: false,
   });
-  m.defines = {"USE_UV" : " "};
   m.userData = {
     uniforms: {
       time: {value: 0},
       totalLength: {value: 0},
-      envMap: { value: null }
     }
   }
   return m;
@@ -175,9 +22,8 @@ function createFishMaterial(){
 
 function createFishGeometry(){
   
-  const divisions = 200;
-  // shaping curves
-  // top
+  const divisions = 600;
+
   let topCurve = new THREE.CatmullRomCurve3(
     [
       [0, 0],
@@ -190,7 +36,7 @@ function createFishGeometry(){
     ].map(p => {return new THREE.Vector3(p[0], p[1], 0)})
   );
   let topPoints = topCurve.getSpacedPoints(100);
-  // bottom
+  
   let bottomCurve = new THREE.CatmullRomCurve3(
     [
       [0, 0],
@@ -203,7 +49,7 @@ function createFishGeometry(){
     ].map(p => {return new THREE.Vector3(p[0], p[1], 0)})
   );
   let bottomPoints = bottomCurve.getSpacedPoints(100);
-  // side
+  
   let sideCurve = new THREE.CatmullRomCurve3(
     [
       [0,   0, 0],
@@ -216,10 +62,9 @@ function createFishGeometry(){
   );
   let sidePoints = sideCurve.getSpacedPoints(100);
   
-  // frames
+  
   let frames = computeFrames();
-  //console.log(frames);
-  // frames to geometry
+  
   let pts = [];
   let parts = [];
   frames.forEach(f => {
@@ -229,8 +74,7 @@ function createFishGeometry(){
     })
   })
   
-  
-  // FINS
+
   // tail fin
   let tailCurve = new THREE.CatmullRomCurve3(
     [
@@ -313,7 +157,6 @@ function createFishGeometry(){
   bodyGeom.computeVertexNormals();
 
   let mainGeom = BufferGeometryUtils.mergeGeometries([bodyGeom, gTail, gDorsal, gRect, gPelvicL, gPelvicR]);
-  //console.log(mainGeom.attributes.position.count)
   return mainGeom;
 
   function createFin(basePoints, contourPoints, isTop){
@@ -339,7 +182,6 @@ function createFishGeometry(){
       if (idx < arr.length - 1) p.setZ(-shift * shiftSign)
     });
 
-    // console.log(contourPoints.length, contourPointsRev.length, basePts.length, basePtsRev.length);
 
     let fullPoints = [];
     fullPoints = fullPoints.concat(contourPoints, contourPointsRev, basePts, basePtsRev);
@@ -361,12 +203,11 @@ function createFishGeometry(){
   function computeFrames(){
     let frames = [];
     let step = 0.05;
-    frames.push(new Array(divisions + 1).fill(0).map(p => {return new THREE.Vector3()})); // first frame all 0
+    frames.push(new Array(divisions + 1).fill(0).map(p => {return new THREE.Vector3()})); 
     for(let i = step; i < 10; i += step){
       frames.push(getFrame(i));
     }
-    frames.push(getFramePoints(topPoints[100], bottomPoints[100], sidePoints[100])); // last frame at tail
-    //console.log(frames[frames.length - 1]);
+    frames.push(getFramePoints(topPoints[100], bottomPoints[100], sidePoints[100])); 
     return frames;
   }
 
@@ -405,15 +246,15 @@ function createFishGeometry(){
 }
 
 
-export function createFish(scene) {
+export function createFish(scene, envMap) {
   const geom = createFishGeometry();
-  const mat  = createFishMaterial();
+  const mat  = createFishMaterial(envMap);
   const bbox = new THREE.Box3().setFromBufferAttribute(geom.attributes.position);
   mat.userData.uniforms.totalLength.value = bbox.max.x;
   const fishMesh = new THREE.Mesh(geom, mat);
 
   fishMesh.castShadow = true;                 
-  fishMesh.receiveShadow = false;            
+  fishMesh.receiveShadow = true;            
 
   scene.add(fishMesh);
   return { mesh: fishMesh, material: mat };
